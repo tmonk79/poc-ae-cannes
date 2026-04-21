@@ -1,0 +1,13 @@
+# Firebase config — contains API keys, do not commit
+frontend/firebase-config.js
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# App Engine
+.gcloudignore
+CLAUDE.md

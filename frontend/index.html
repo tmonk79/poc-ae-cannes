@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>YouTube Drive-in POC</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ── */
+    header {
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #ff0000;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      flex: 1;
+    }
+
+    .session-meta {
+      margin-left: auto;
+      font-size: 0.75rem;
+      color: #888;
+      text-align: right;
+      line-height: 1.6;
+    }
+
+    .session-meta span { color: #ccc; }
+
+    /* ── Buttons ── */
+    button {
+      padding: 0.45rem 1rem;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    button:not(:disabled):hover { opacity: 0.85; }
+
+    .btn-primary   { background: #ff0000; color: #fff; }
+    .btn-secondary { background: #2a2a2a; color: #ccc; border: 1px solid #444; }
+    .btn-genre     { background: #1a6b3c; color: #fff; }
+
+    select {
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #ccc;
+      padding: 0.45rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+
+    input[type="text"] {
+      background: #1e1e1e;
+      border: 1px solid #444;
+      color: #ccc;
+      padding: 0.45rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      width: 22rem;
+    }
+
+    /* ── Status pill ── */
+    .status-pill {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .status-pending           { background: #333; color: #888; }
+    .status-preroll_running   { background: #7c4a00; color: #ffa940; }
+    .status-preroll_complete  { background: #1a4d2e; color: #52c41a; }
+    .status-short_running     { background: #003566; color: #69b1ff; }
+    .status-complete          { background: #1a4d2e; color: #52c41a; }
+    .status-failed            { background: #5c0011; color: #ff4d4f; }
+
+    /* ── Three-panel layout ── */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr 260px;
+      gap: 1px;
+      background: #222;
+      height: calc(100vh - 62px);
+    }
+
+    .panel {
+      background: #111;
+      overflow-y: auto;
+      padding: 1rem;
+    }
+
+    .panel-title {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #666;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid #222;
+    }
+
+    /* ── Asset cards ── */
+    .asset-card {
+      background: #1a1a1a;
+      border-radius: 6px;
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+      border-left: 3px solid #333;
+      transition: border-color 0.3s;
+    }
+    .asset-card.pending       { border-left-color: #333; }
+    .asset-card.image_complete { border-left-color: #1668dc; }
+    .asset-card.complete      { border-left-color: #1a6b3c; }
+    .asset-card.failed        { border-left-color: #a8071a; }
+
+    .asset-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .asset-label a {
+      font-size: 0.65rem;
+      color: #4a9eff;
+      text-decoration: none;
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .asset-label a:hover { text-decoration: underline; }
+
+    .asset-status {
+      font-size: 0.7rem;
+      color: #555;
+      margin-bottom: 0.5rem;
+    }
+    .asset-status.complete { color: #52c41a; }
+    .asset-status.image_complete { color: #69b1ff; }
+    .asset-status.failed { color: #ff4d4f; }
+
+    .asset-media {
+      margin-top: 0.5rem;
+    }
+    .asset-media img {
+      width: 100%;
+      border-radius: 4px;
+      display: block;
+    }
+    .asset-media video {
+      width: 100%;
+      border-radius: 4px;
+      display: block;
+    }
+
+    /* ── Shot grid ── */
+    .shots-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+
+    .shot-card {
+      background: #1a1a1a;
+      border-radius: 6px;
+      padding: 0.6rem;
+      border-left: 3px solid #333;
+      transition: border-color 0.3s;
+    }
+    .shot-card.image_complete { border-left-color: #1668dc; }
+    .shot-card.complete       { border-left-color: #1a6b3c; }
+
+    .shot-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.35rem;
+    }
+
+    .shot-status {
+      font-size: 0.65rem;
+      color: #555;
+      margin-bottom: 0.35rem;
+    }
+
+    .shot-media img, .shot-media video {
+      width: 100%;
+      border-radius: 3px;
+      display: block;
+      margin-top: 0.25rem;
+    }
+
+    /* ── Session info panel ── */
+    .info-row {
+      margin-bottom: 1rem;
+    }
+
+    .info-label {
+      font-size: 0.65rem;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.2rem;
+    }
+
+    .info-value {
+      font-size: 0.8rem;
+      color: #ccc;
+      word-break: break-all;
+    }
+
+    .timing-block {
+      background: #1a1a1a;
+      border-radius: 6px;
+      padding: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .timing-label {
+      font-size: 0.65rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.3rem;
+    }
+
+    .timing-value {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #ffa940;
+      font-variant-numeric: tabular-nums;
+    }
+    .timing-value.done { color: #52c41a; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 60%;
+      color: #333;
+      font-size: 0.8rem;
+      text-align: center;
+      gap: 0.5rem;
+    }
+
+    .empty-state .icon { font-size: 2rem; }
+
+    /* ── Separator ── */
+    .separator {
+      height: 1px;
+      background: #222;
+      margin: 1rem 0;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>▶ YouTube Drive-in POC</h1>
+
+  <div class="controls">
+    <button class="btn-primary" id="start-btn">Start POC — Phase 1</button>
+
+    <div style="display:flex;align-items:center;gap:0.4rem;">
+      <input type="text" id="sid-input" placeholder="Paste existing session ID…">
+      <button class="btn-secondary" id="watch-btn">Watch</button>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:0.4rem;margin-left:1rem;">
+      <select id="genre-select">
+        <option value="action-adventure">Action-Adventure</option>
+        <option value="romance">Romance</option>
+        <option value="sci-fi">Sci-Fi</option>
+        <option value="comedy">Comedy</option>
+      </select>
+      <button class="btn-genre" id="phase2-btn" disabled>Trigger Phase 2</button>
+    </div>
+  </div>
+
+  <div class="session-meta" id="session-meta" style="display:none;">
+    <div>Session <span id="meta-sid">—</span></div>
+    <div>Status <span id="meta-status">—</span></div>
+  </div>
+</header>
+
+<div class="panels">
+
+  <!-- Panel 1: Phase 1 Pre-roll -->
+  <div class="panel" id="panel-phase1">
+    <div class="panel-title">Phase 1 — Pre-roll</div>
+    <div id="phase1-content">
+      <div class="empty-state">
+        <div class="icon">🎬</div>
+        <div>Start a session to begin</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 2: Phase 2 Short -->
+  <div class="panel" id="panel-phase2">
+    <div class="panel-title">Phase 2 — Short Film</div>
+    <div id="phase2-content">
+      <div class="empty-state">
+        <div class="icon">🎞</div>
+        <div>Waiting for genre selection</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 3: Session info -->
+  <div class="panel" id="panel-info">
+    <div class="panel-title">Session Info</div>
+    <div id="info-content">
+      <div class="empty-state">
+        <div class="icon">📋</div>
+        <div>No active session</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script type="module">
+  import { firebaseConfig } from '/poc/static/firebase-config.js';
+  import { initializeApp }  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getFirestore, doc, onSnapshot }
+    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  let sessionId   = null;
+  let unsubscribe = null;
+  let prev        = null;
+  let phase1Timer = null;
+  let phase2Timer = null;
+  let phase1Start = null;
+  let phase2Start = null;
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  function mediaUrl(gsUri) {
+    // Proxy through Flask so the browser can load gs:// assets
+    return `/poc/media?uri=${encodeURIComponent(gsUri)}`;
+  }
+
+  function statusPill(status) {
+    return `<span class="status-pill status-${status}">${status.replace(/_/g, ' ')}</span>`;
+  }
+
+  function formatSecs(ms) {
+    if (ms == null || isNaN(ms)) return '—';
+    return (ms / 1000).toFixed(1) + 's';
+  }
+
+  function tsToMs(ts) {
+    if (!ts) return null;
+    // Firestore Timestamp objects have .toMillis(); plain numbers also work
+    if (ts && typeof ts.toMillis === 'function') return ts.toMillis();
+    if (typeof ts === 'number') return ts;
+    return null;
+  }
+
+  function startLiveClock(startMs, elementId, onDone) {
+    return setInterval(() => {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const elapsed = Date.now() - startMs;
+      el.textContent = formatSecs(elapsed);
+    }, 200);
+  }
+
+  // ── Session lifecycle ─────────────────────────────────────────────────────
+
+  async function startSession() {
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('start-btn').textContent = 'Starting…';
+    try {
+      const res = await fetch('/poc/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guestImagePath: 'test_assets/guest.jpg' }),
+      });
+      const data = await res.json();
+      attachListener(data.sessionId);
+    } catch (e) {
+      alert('Failed to start session: ' + e.message);
+      document.getElementById('start-btn').disabled = false;
+      document.getElementById('start-btn').textContent = 'Start POC — Phase 1';
+    }
+  }
+
+  async function triggerPhase2() {
+    if (!sessionId) return;
+    const genre = document.getElementById('genre-select').value;
+    document.getElementById('phase2-btn').disabled = true;
+    document.getElementById('phase2-btn').textContent = 'Queued…';
+    await fetch('/poc/genre', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, genre }),
+    });
+  }
+
+  function attachListener(sid) {
+    sessionId = sid;
+    document.getElementById('sid-input').value = sid;
+    document.getElementById('session-meta').style.display = 'block';
+    document.getElementById('meta-sid').textContent = sid.slice(0, 8) + '…';
+
+    if (unsubscribe) unsubscribe();
+    prev = null;
+
+    unsubscribe = onSnapshot(doc(db, 'sessions', sid), snap => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      renderAll(data);
+      prev = data;
+    });
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  function renderAll(data) {
+    renderHeader(data);
+    renderPhase1(data);
+    renderPhase2(data);
+    renderInfo(data);
+  }
+
+  function renderHeader(data) {
+    document.getElementById('meta-status').innerHTML = statusPill(data.status);
+
+    // Enable Phase 2 button once preroll complete (and not already running)
+    if (['preroll_complete', 'short_running', 'complete'].includes(data.status)) {
+      const p2btn = document.getElementById('phase2-btn');
+      if (data.status === 'preroll_complete') {
+        p2btn.disabled = false;
+        p2btn.textContent = 'Trigger Phase 2';
+      }
+    }
+  }
+
+  function renderPhase1(data) {
+    const assets = data.assets;
+    const el = document.getElementById('phase1-content');
+
+    const items = [
+      { key: 'imageAd1',  label: 'Image Ad 1',  type: 'image' },
+      { key: 'imageAd2',  label: 'Image Ad 2',  type: 'image' },
+      { key: 'videoAd',   label: 'Video Ad',    type: 'video' },
+      { key: 'poster',    label: 'Poster (9:16)', type: 'image' },
+    ];
+
+    el.innerHTML = items.map(({ key, label, type }) => {
+      const a = assets[key] || {};
+      const status = a.status || 'pending';
+      const openLink = a.uri
+        ? `<a href="${mediaUrl(a.uri)}" target="_blank">Open ↗</a>`
+        : '';
+      const media = (a.uri && status === 'complete')
+        ? (type === 'image'
+            ? `<div class="asset-media"><img src="${mediaUrl(a.uri)}" alt="${label}"></div>`
+            : `<div class="asset-media"><video src="${mediaUrl(a.uri)}" controls></video></div>`)
+        : '';
+      return `
+        <div class="asset-card ${status}">
+          <div class="asset-label">${label} ${openLink}</div>
+          <div class="asset-status ${status}">${status}</div>
+          ${media}
+        </div>`;
+    }).join('');
+  }
+
+  function renderPhase2(data) {
+    const assets = data.assets;
+    const el = document.getElementById('phase2-content');
+
+    if (!['short_running', 'complete'].includes(data.status) && !assets.shots?.some(s => s.status !== 'pending')) {
+      if (data.status === 'preroll_complete') {
+        el.innerHTML = '<div class="empty-state"><div class="icon">🎞</div><div>Select a genre and trigger Phase 2</div></div>';
+      }
+      return;
+    }
+
+    const shots = (assets.shots || []).map((s, i) => {
+      const status = s.status || 'pending';
+      const img = s.imageUri
+        ? `<img src="${mediaUrl(s.imageUri)}" alt="Shot ${i} image">`
+        : '';
+      const vid = s.videoUri
+        ? `<video src="${mediaUrl(s.videoUri)}" controls></video>`
+        : '';
+      return `
+        <div class="shot-card ${status}">
+          <div class="shot-label">Shot ${i}</div>
+          <div class="shot-status">${status}</div>
+          <div class="shot-media">${img}${vid}</div>
+        </div>`;
+    }).join('');
+
+    const final = assets.shortFinal || {};
+    const finalStatus = final.status || 'pending';
+    const finalMedia = (final.uri && finalStatus === 'complete')
+      ? `<div class="asset-media"><video src="${mediaUrl(final.uri)}" controls></video></div>`
+      : '';
+    const finalCard = `
+      <div class="asset-card ${finalStatus}" style="margin-top:0.75rem;">
+        <div class="asset-label">Final Short (48s)
+          ${final.uri ? `<a href="${mediaUrl(final.uri)}" target="_blank">Open ↗</a>` : ''}
+        </div>
+        <div class="asset-status ${finalStatus}">${finalStatus}</div>
+        ${finalMedia}
+      </div>`;
+
+    el.innerHTML = `<div class="shots-grid">${shots}</div>${finalCard}`;
+  }
+
+  function renderInfo(data) {
+    const el = document.getElementById('info-content');
+    const t = data.timing || {};
+
+    const p1StartMs = tsToMs(t.prerollStarted);
+    const p1EndMs   = tsToMs(t.prerollComplete);
+    const p2StartMs = tsToMs(t.shortStarted);
+    const p2EndMs   = tsToMs(t.shortComplete);
+
+    // Start live clocks when phases begin
+    if (p1StartMs && !phase1Start) {
+      phase1Start = p1StartMs;
+      if (!p1EndMs) {
+        phase1Timer = startLiveClock(p1StartMs, 'p1-elapsed');
+      }
+    }
+    if (p1EndMs && phase1Timer) {
+      clearInterval(phase1Timer);
+      phase1Timer = null;
+    }
+    if (p2StartMs && !phase2Start) {
+      phase2Start = p2StartMs;
+      if (!p2EndMs) {
+        phase2Timer = startLiveClock(p2StartMs, 'p2-elapsed');
+      }
+    }
+    if (p2EndMs && phase2Timer) {
+      clearInterval(phase2Timer);
+      phase2Timer = null;
+    }
+
+    const p1Elapsed = p1EndMs ? formatSecs(p1EndMs - p1StartMs) : (p1StartMs ? '…' : '—');
+    const p2Elapsed = p2EndMs ? formatSecs(p2EndMs - p2StartMs) : (p2StartMs ? '…' : '—');
+
+    el.innerHTML = `
+      <div class="info-row">
+        <div class="info-label">Status</div>
+        <div class="info-value">${statusPill(data.status)}</div>
+      </div>
+
+      <div class="info-row">
+        <div class="info-label">Session ID</div>
+        <div class="info-value" style="font-size:0.65rem;color:#555;">${data.sessionId}</div>
+      </div>
+
+      <div class="info-row">
+        <div class="info-label">Genre</div>
+        <div class="info-value">${data.genre || '—'}</div>
+      </div>
+
+      <div class="separator"></div>
+
+      <div class="timing-block">
+        <div class="timing-label">Phase 1 time</div>
+        <div class="timing-value ${p1EndMs ? 'done' : ''}" id="p1-elapsed">${p1Elapsed}</div>
+      </div>
+
+      <div class="timing-block">
+        <div class="timing-label">Phase 2 time</div>
+        <div class="timing-value ${p2EndMs ? 'done' : ''}" id="p2-elapsed">${p2Elapsed}</div>
+      </div>
+
+      <div class="separator"></div>
+
+      <div class="info-row">
+        <div class="info-label">Phase 1 started</div>
+        <div class="info-value">${p1StartMs ? new Date(p1StartMs).toLocaleTimeString() : '—'}</div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">Phase 1 complete</div>
+        <div class="info-value">${p1EndMs ? new Date(p1EndMs).toLocaleTimeString() : '—'}</div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">Phase 2 started</div>
+        <div class="info-value">${p2StartMs ? new Date(p2StartMs).toLocaleTimeString() : '—'}</div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">Phase 2 complete</div>
+        <div class="info-value">${p2EndMs ? new Date(p2EndMs).toLocaleTimeString() : '—'}</div>
+      </div>
+    `;
+  }
+
+  // ── Wire up controls ──────────────────────────────────────────────────────
+
+  document.getElementById('start-btn').addEventListener('click', startSession);
+  document.getElementById('phase2-btn').addEventListener('click', triggerPhase2);
+  document.getElementById('watch-btn').addEventListener('click', () => {
+    const sid = document.getElementById('sid-input').value.trim();
+    if (sid) attachListener(sid);
+  });
+
+  // Auto-attach if sessionId is in the URL query string
+  const urlSid = new URLSearchParams(window.location.search).get('sessionId');
+  if (urlSid) attachListener(urlSid);
+</script>
+
+</body>
+</html>

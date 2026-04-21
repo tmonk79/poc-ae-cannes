@@ -1,0 +1,11 @@
+runtime: python311
+
+handlers:
+  - url: /.*
+    script: auto
+
+env_variables:
+  GCP_PROJECT: "YOUR_PERSONAL_PROJECT_ID"
+  GCS_BUCKET: "YOUR_BUCKET_NAME"
+  TASKS_LOCATION: "us-central1"
+  VERTEX_LOCATION: "us-central1"

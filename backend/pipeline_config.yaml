@@ -1,0 +1,83 @@
+models:
+  image_with_reference: imagen-3.0-capability-001
+  image_without_reference: imagen-4.0-fast-generate-001
+  video: veo-3.0-fast-generate-001
+
+generation:
+  shot_duration_seconds: 8
+  video_ad_duration_seconds: 6
+  video_aspect_ratio: "16:9"
+
+prompts:
+  image_ad_1: >-
+    A vibrant cinematic advertisement for a YouTube Drive-in movie night.
+    The guest is the star — enjoying popcorn under a glowing screen,
+    warm neon light, cinematic wide shot.
+
+  image_ad_2: >-
+    A retro drive-in movie advertisement. Neon signs, starry sky,
+    the guest as the hero of the show. Bold typography, vintage poster style.
+
+  video_ad: >-
+    Cinematic promotional ad for a YouTube Drive-in movie night.
+    Low aerial drone shot glides forward over a packed 1950s-style drive-in lot at dusk —
+    rows of gleaming vintage cars, their windows reflecting a giant screen as it flickers to life.
+    The projection beam cuts dramatically through hazy night air.
+    Neon concession stand signs buzz on in the foreground.
+    Quick cut to a close-up of popcorn being tossed into the air in slow motion,
+    golden kernels catching the screen light.
+    End on a wide pull-back revealing the full glowing amphitheatre under a starry sky.
+    Colour grade: warm amber, rich shadows, film grain. High energy, euphoric mood.
+
+  poster: >-
+    A cinematic 9:16 vertical movie poster.
+    The person in this image is [1], the star of the film — shown in a dramatic hero pose,
+    facing slightly off-camera, centre-frame.
+    Epic Hollywood blockbuster style: deep shadow, rich contrast, volumetric god-rays piercing
+    through dark storm clouds behind them.
+    Background: a giant glowing drive-in movie screen at night, rows of vintage cars,
+    warm amber and teal colour grading.
+    Bold sans-serif title text at the top reads 'YOUR STORY'.
+    Tagline in smaller type near the bottom: 'One night. One screen. Unforgettable.'
+    Photorealistic, ultra-detailed, anamorphic lens flare, IMAX quality.
+
+shots:
+  default:
+    - "Cinematic shot 1 of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
+    - "Cinematic shot 2 of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
+    - "Cinematic shot 3 of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
+    - "Cinematic shot 4 of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
+    - "Cinematic shot 5 of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
+    - "Cinematic shot 6 of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
+
+  action-adventure:
+    - "Epic wide shot of a hero charging across a rooftop at sunset, city skyline behind"
+    - "Close-up of determined eyes scanning the horizon, wind in hair"
+    - "Slow-motion explosion behind a running silhouette, debris flying"
+    - "Hero leaping between buildings, city far below, golden hour light"
+    - "Intense face-off between hero and villain in a dark rain-soaked alley"
+    - "Triumphant hero standing on a cliff edge, arms outstretched, golden light"
+
+  romance:
+    - "Two people meeting eyes across a crowded candlelit cafe, soft focus background"
+    - "Slow walk along a rain-soaked Parisian street, sharing a single umbrella"
+    - "Laughing together on a rooftop terrace, city lights twinkling below"
+    - "A shy hand-hold at the cinema, faces lit by the screen"
+    - "Intimate candlelit dinner, nervous smiles across the table"
+    - "First kiss under a shower of falling cherry blossoms"
+
+  sci-fi:
+    - "Vast alien landscape, twin suns setting over purple mountains"
+    - "Hero piloting a sleek spacecraft through a dense asteroid field"
+    - "Holographic star map flickering in a dark command room"
+    - "Close-up of a robot hand gently touching a human hand"
+    - "Epic space battle — laser bursts illuminating the void"
+    - "Spacecraft descending through clouds toward Earth, crowds cheering below"
+
+  comedy:
+    - "Slapstick mishap — office coffee machine going completely haywire"
+    - "Bewildered expression as a dog calmly walks off with the TV remote"
+    - "Hilariously awkward elevator ride with way too many people squeezed in"
+    - "Surprise birthday cake launched directly into someone's face"
+    - "Frantic chase scene through a busy farmers market, vegetables flying"
+    - "Victorious fist-pump — accidentally hitting the ceiling fan"

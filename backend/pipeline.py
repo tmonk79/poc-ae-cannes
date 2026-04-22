@@ -1,14 +1,14 @@
 """
 Vertex AI generation functions for Phase 1 (preroll) and Phase 2 (short).
 
-Two SDKs in use:
-  - google-genai — all generation calls (image + video).
-    * Image with guest reference: client.models.edit_image() + SubjectReferenceImage
-      using model imagen-3.0-capability-001. Guest GCS URI passed directly.
-    * Image without reference: client.models.generate_images() using imagen-4.0-fast-generate-001
-    * Video: client.models.generate_videos() using veo-3.0-fast-generate-001 (long-polling)
-  - vertexai (google-cloud-aiplatform) — no longer used for generation.
-    Kept in requirements for potential future use.
+All generation uses google-genai:
+  - Image with guest reference: client.models.edit_image() + SubjectReferenceImage
+    using model imagen-3.0-capability-001. Guest GCS URI passed directly.
+  - Image without reference: client.models.generate_images() using imagen-4.0-fast-generate-001
+  - Video: client.models.generate_videos() using veo-3.0-fast-generate-001 (long-polling)
+
+Prompts, model names, and generation params are loaded from pipeline_config.yaml
+at startup — edit that file to tune prompts without touching Python.
 
 All public functions are async. Blocking SDK calls run in run_in_executor
 to avoid blocking the asyncio event loop. Veo calls use a polling loop
@@ -20,6 +20,9 @@ import contextlib
 import os
 import tempfile
 import time
+from pathlib import Path
+
+import yaml
 
 from google import genai
 from google.genai import types
@@ -37,13 +40,19 @@ import gcs_client as gcs
 PROJECT = os.environ.get("GCP_PROJECT", "")
 LOCATION = os.environ.get("VERTEX_LOCATION", "us-central1")
 
-# Confirmed available on poc-yt-cannes-494105
-IMAGE_MODEL = "imagen-4.0-fast-generate-001"          # text-to-image (no reference)
-IMAGE_MODEL_CAPABILITY = "imagen-3.0-capability-001"  # image with SubjectReferenceImage
-VIDEO_MODEL = "veo-3.0-fast-generate-001"
 
-# Veo clip duration. 6 shots × 8s = 48s final Short.
-SHOT_DURATION_SECONDS = 8
+def _load_config() -> dict:
+    config_path = Path(__file__).parent / "pipeline_config.yaml"
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
+_CONFIG = _load_config()
+
+IMAGE_MODEL = _CONFIG["models"]["image_without_reference"]
+IMAGE_MODEL_CAPABILITY = _CONFIG["models"]["image_with_reference"]
+VIDEO_MODEL = _CONFIG["models"]["video"]
+SHOT_DURATION_SECONDS = _CONFIG["generation"]["shot_duration_seconds"]
 
 _genai_client_instance = None
 
@@ -192,11 +201,7 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 
     async def make_image_ad1():
         data = await _generate_image(
-            prompt=(
-                "A vibrant cinematic advertisement for a YouTube Drive-in movie night. "
-                "The guest is the star — enjoying popcorn under a glowing screen, "
-                "warm neon light, cinematic wide shot."
-            ),
+            prompt=_CONFIG["prompts"]["image_ad_1"],
             aspect_ratio="1:1",
             reference_image_gcs=guest_image_gcs,
         )
@@ -205,10 +210,7 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 
     async def make_image_ad2():
         data = await _generate_image(
-            prompt=(
-                "A retro drive-in movie advertisement. Neon signs, starry sky, "
-                "the guest as the hero of the show. Bold typography, vintage poster style."
-            ),
+            prompt=_CONFIG["prompts"]["image_ad_2"],
             aspect_ratio="1:1",
             reference_image_gcs=guest_image_gcs,
         )
@@ -217,36 +219,15 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 
     async def make_video_ad():
         data = await _generate_video(
-            prompt=(
-                "Cinematic promotional ad for a YouTube Drive-in movie night. "
-                "Low aerial drone shot glides forward over a packed 1950s-style drive-in lot at dusk — "
-                "rows of gleaming vintage cars, their windows reflecting a giant screen as it flickers to life. "
-                "The projection beam cuts dramatically through hazy night air. "
-                "Neon concession stand signs buzz on in the foreground. "
-                "Quick cut to a close-up of popcorn being tossed into the air in slow motion, "
-                "golden kernels catching the screen light. "
-                "End on a wide pull-back revealing the full glowing amphitheatre under a starry sky. "
-                "Colour grade: warm amber, rich shadows, film grain. High energy, euphoric mood."
-            ),
-            duration_seconds=6,
+            prompt=_CONFIG["prompts"]["video_ad"],
+            duration_seconds=_CONFIG["generation"]["video_ad_duration_seconds"],
         )
         uri = gcs.upload_bytes(data, f"{base_path}/ads/video_ad.mp4", "video/mp4")
         fs.set_asset(session_id, "videoAd", uri)
 
     async def make_poster():
         data = await _generate_image(
-            prompt=(
-                "A cinematic 9:16 vertical movie poster. "
-                "The person in this image is [1], the star of the film — shown in a dramatic hero pose, "
-                "facing slightly off-camera, centre-frame. "
-                "Epic Hollywood blockbuster style: deep shadow, rich contrast, volumetric god-rays piercing "
-                "through dark storm clouds behind them. "
-                "Background: a giant glowing drive-in movie screen at night, rows of vintage cars, "
-                "warm amber and teal colour grading. "
-                "Bold sans-serif title text at the top reads 'YOUR STORY'. "
-                "Tagline in smaller type near the bottom: 'One night. One screen. Unforgettable.' "
-                "Photorealistic, ultra-detailed, anamorphic lens flare, IMAX quality."
-            ),
+            prompt=_CONFIG["prompts"]["poster"],
             aspect_ratio="9:16",
             reference_image_gcs=guest_image_gcs,
         )
@@ -268,49 +249,9 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 # Phase 2 — Short pipeline
 # ---------------------------------------------------------------------------
 
-SHOT_PROMPTS: dict[str, list[str]] = {
-    "action-adventure": [
-        "Epic wide shot of a hero charging across a rooftop at sunset, city skyline behind",
-        "Close-up of determined eyes scanning the horizon, wind in hair",
-        "Slow-motion explosion behind a running silhouette, debris flying",
-        "Hero leaping between buildings, city far below, golden hour light",
-        "Intense face-off between hero and villain in a dark rain-soaked alley",
-        "Triumphant hero standing on a cliff edge, arms outstretched, golden light",
-    ],
-    "romance": [
-        "Two people meeting eyes across a crowded candlelit cafe, soft focus background",
-        "Slow walk along a rain-soaked Parisian street, sharing a single umbrella",
-        "Laughing together on a rooftop terrace, city lights twinkling below",
-        "A shy hand-hold at the cinema, faces lit by the screen",
-        "Intimate candlelit dinner, nervous smiles across the table",
-        "First kiss under a shower of falling cherry blossoms",
-    ],
-    "sci-fi": [
-        "Vast alien landscape, twin suns setting over purple mountains",
-        "Hero piloting a sleek spacecraft through a dense asteroid field",
-        "Holographic star map flickering in a dark command room",
-        "Close-up of a robot hand gently touching a human hand",
-        "Epic space battle — laser bursts illuminating the void",
-        "Spacecraft descending through clouds toward Earth, crowds cheering below",
-    ],
-    "comedy": [
-        "Slapstick mishap — office coffee machine going completely haywire",
-        "Bewildered expression as a dog calmly walks off with the TV remote",
-        "Hilariously awkward elevator ride with way too many people squeezed in",
-        "Surprise birthday cake launched directly into someone's face",
-        "Frantic chase scene through a busy farmers market, vegetables flying",
-        "Victorious fist-pump — accidentally hitting the ceiling fan",
-    ],
-}
-
-DEFAULT_SHOT_PROMPTS = [
-    f"Cinematic shot {i + 1} of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
-    for i in range(6)
-]
-
-
 def _get_shot_prompts(genre: str) -> list[str]:
-    return SHOT_PROMPTS.get(genre, DEFAULT_SHOT_PROMPTS)
+    shots = _CONFIG["shots"]
+    return shots.get(genre, shots["default"])
 
 
 async def _process_shot(
@@ -399,40 +340,71 @@ async def run_short(session_id: str, genre: str, guest_image_gcs: str):
 # ---------------------------------------------------------------------------
 
 async def _concatenate_videos(video_bytes_list: list[bytes]) -> bytes:
-    """Concatenate MP4 clips using moviepy. Runs in executor to avoid blocking."""
+    """
+    Concatenate MP4 clips using ffmpeg stream copy. Runs in executor to avoid blocking.
+
+    Uses ffmpeg -f concat with -c copy (no re-encode) — much faster than moviepy.
+    The ffmpeg binary is provided by imageio-ffmpeg, which bundles a platform binary
+    as a Python wheel so it works on App Engine Standard without any system install.
+    """
     loop = asyncio.get_event_loop()
 
     def _call():
-        from moviepy.editor import VideoFileClip, concatenate_videoclips
+        import subprocess
+        import imageio_ffmpeg
 
         tmp_files: list[str] = []
-        clips: list[VideoFileClip] = []
+        list_file_path = None
         out_path = None
 
         try:
+            # Write each clip to a temp file
             for data in video_bytes_list:
                 tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
                 tmp.write(data)
                 tmp.flush()
                 tmp.close()
                 tmp_files.append(tmp.name)
-                clips.append(VideoFileClip(tmp.name))
 
-            final = concatenate_videoclips(clips)
+            # Write ffmpeg concat list file
+            list_tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False
+            )
+            for path in tmp_files:
+                list_tmp.write(f"file '{path}'\n")
+            list_tmp.flush()
+            list_tmp.close()
+            list_file_path = list_tmp.name
+
+            # Output temp file
             out_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
             out_path = out_tmp.name
             out_tmp.close()
-            final.write_videofile(out_path, codec="libx264", audio=False, logger=None)
+
+            subprocess.run(
+                [
+                    imageio_ffmpeg.get_ffmpeg_exe(),
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", list_file_path,
+                    "-c", "copy",
+                    "-y",
+                    out_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
 
             with open(out_path, "rb") as f:
                 return f.read()
+
         finally:
-            for c in clips:
-                with contextlib.suppress(Exception):
-                    c.close()
             for p in tmp_files:
                 with contextlib.suppress(Exception):
                     os.unlink(p)
+            if list_file_path:
+                with contextlib.suppress(Exception):
+                    os.unlink(list_file_path)
             if out_path:
                 with contextlib.suppress(Exception):
                     os.unlink(out_path)

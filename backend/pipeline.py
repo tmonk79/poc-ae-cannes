@@ -167,6 +167,10 @@ async def _generate_video(
             time.sleep(15)
             operation = client.operations.get(operation)
 
+        if operation.result is None:
+            error = getattr(operation, "error", "no result returned")
+            raise RuntimeError(f"Veo generation failed: {error}")
+
         return operation.result.generated_videos[0].video.video_bytes
 
     return await loop.run_in_executor(None, _call)
@@ -259,6 +263,7 @@ async def _process_shot(
     shot_index: int,
     prompt: str,
     guest_image_gcs: str,
+    semaphore: asyncio.Semaphore,
 ) -> bytes:
     """
     Generate image then video for a single shot, updating Firestore after each step.
@@ -272,12 +277,13 @@ async def _process_shot(
     tmp_path = None
 
     try:
-        # Step 1 — generate shot image
-        image_bytes = await _generate_image(
-            prompt=prompt,
-            aspect_ratio="16:9",
-            reference_image_gcs=guest_image_gcs,
-        )
+        # Step 1 — generate shot image (semaphore limits concurrent edit_image calls to avoid 429)
+        async with semaphore:
+            image_bytes = await _generate_image(
+                prompt=prompt,
+                aspect_ratio="16:9",
+                reference_image_gcs=guest_image_gcs,
+            )
         image_uri = gcs.upload_bytes(
             image_bytes,
             f"{base_path}/shot_{shot_index}_image.png",
@@ -318,9 +324,10 @@ async def run_short(session_id: str, genre: str, guest_image_gcs: str):
     fs.set_genre(session_id, genre)
 
     prompts = _get_shot_prompts(genre)
+    semaphore = asyncio.Semaphore(2)
 
     video_results = await asyncio.gather(
-        *[_process_shot(session_id, i, prompts[i], guest_image_gcs) for i in range(6)]
+        *[_process_shot(session_id, i, prompts[i], guest_image_gcs, semaphore) for i in range(6)]
     )
 
     final_mp4 = await _concatenate_videos(list(video_results))

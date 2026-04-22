@@ -1,5 +1,10 @@
 runtime: python311
 
+# 1 worker, 8 threads, 600s timeout — needed for long-running Veo calls (~90s each × 6 concurrent)
+entrypoint: python -m gunicorn -b :$PORT -w 1 --threads 8 --timeout 600 main:app
+
+instance_class: F4
+
 handlers:
   - url: /.*
     script: auto

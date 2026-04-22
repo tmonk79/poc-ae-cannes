@@ -208,19 +208,68 @@ Open the UI at **http://localhost:8080/poc/**
 
 ## Step 11 — Deploy to App Engine
 
-Once local testing is working:
+### 11a — Grant App Engine service account storage access
+
+App Engine needs access to its internal staging bucket to build and deploy. Without this the deploy will fail with a `FAILED_PRECONDITION` error:
+
+```bash
+gcloud projects add-iam-policy-binding poc-yt-cannes-494105 \
+  --member="serviceAccount:poc-yt-cannes-494105@appspot.gserviceaccount.com" \
+  --role="roles/storage.admin"
+```
+
+### 11b — Check `.gcloudignore`
+
+The deploy uploads everything in `backend/` unless excluded. Make sure `.gcloudignore` excludes local dev artifacts:
+
+```
+.venv/
+.env.local
+test_output.png
+test_output.mp4
+test_vertex.py
+test_assets/
+```
+
+These are already added. If you add new local-only files in future, add them here too.
+
+### 11c — Set up App Engine firewall rules
+
+Before deploying, restrict access to known IPs only — otherwise the app is publicly accessible and anyone could trigger Vertex AI generation and run up the bill:
+
+```bash
+# Allow your IP (replace with your actual public IP)
+gcloud app firewall-rules create 100 \
+  --action=ALLOW \
+  --source-range=YOUR_IP/32 \
+  --description="dev access"
+
+# Deny everything else
+gcloud app firewall-rules update default --action=DENY
+```
+
+To update the IP later (e.g. if it changes):
+```bash
+gcloud app firewall-rules update 100 --source-range=NEW_IP/32
+```
+
+For the event, use static IPs assigned to the kiosk/BA devices and add them as additional ALLOW rules.
+
+### 11d — Deploy
 
 ```bash
 cd backend
 gcloud app deploy
 ```
 
-After deploy, Cloud Tasks will dispatch automatically and the full end-to-end flow works.
+After deploy, Cloud Tasks dispatches automatically and the full end-to-end flow works — no curl needed.
 
-View logs:
+View live logs:
 ```bash
 gcloud app logs tail -s default
 ```
+
+Or in GCP Console: Logging → Logs Explorer → filter by `resource.type="gae_app"`.
 
 ---
 
@@ -233,9 +282,12 @@ gcloud app logs tail -s default
 | 3 | App Engine, Firestore, GCS bucket, Cloud Tasks queues created | ✓ |
 | 4 | Service account created with correct roles | ✓ |
 | 5 | Veo access verified (~90s per call, `veo-3.0-fast-generate-001`) | ✓ |
-| 6 | `backend/app.yaml` configured | [ ] |
-| 7 | `frontend/firebase-config.js` configured | [ ] |
-| 8 | Test guest photo added | [ ] |
+| 6 | `backend/app.yaml` configured | ✓ |
+| 7 | `frontend/firebase-config.js` configured | ✓ |
+| 8 | Test guest photo added | ✓ |
 | 9 | `pip install -r requirements.txt` done | ✓ |
-| 10 | Local run working at http://localhost:8080/poc/ | [ ] |
-| 11 | Deployed to App Engine | [ ] |
+| 10 | Local run working at http://localhost:8080/poc/ | ✓ |
+| 11a | App Engine service account granted `storage.admin` | ✓ |
+| 11b | `.gcloudignore` updated to exclude local dev artifacts | ✓ |
+| 11c | App Engine firewall rules configured (IP allowlist) | ✓ |
+| 11d | Deployed to App Engine | ✓ |

@@ -28,8 +28,7 @@ app = Flask(__name__)
 PROJECT = os.environ.get("GCP_PROJECT", "")
 GCS_BUCKET = os.environ.get("GCS_BUCKET", "")
 
-# Frontend lives one level up from backend/ at the repo root
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
 # ---------------------------------------------------------------------------
@@ -40,19 +39,23 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 def start():
     """
     Simulate kiosk photo capture.
-    Body: { "guestImagePath": "test_assets/guest.jpg" }
+    Body (App Engine / production): { "guestImageGcs": "gs://bucket/path/guest.jpg" }
+    Body (local dev fallback):      { "guestImagePath": "test_assets/guest.jpg" }
     Returns: { "sessionId": "..." }
     """
     body = request.get_json(force=True)
-    local_path = body.get("guestImagePath", "test_assets/guest.jpg")
-
-    # Upload guest image to GCS first so it's available to Vertex AI
-    session_id = "tmp"  # placeholder to get a path; replaced below
     import uuid
     session_id = str(uuid.uuid4())
 
-    gcs_path = f"sessions/{session_id}/input/guest.jpg"
-    guest_image_uri = gcs.upload_file(local_path, gcs_path, "image/jpeg")
+    guest_image_gcs = body.get("guestImageGcs")
+    if guest_image_gcs:
+        # Kiosk/production path — GCS URI provided directly
+        guest_image_uri = guest_image_gcs
+    else:
+        # Local dev fallback — upload from local file
+        local_path = body.get("guestImagePath", "test_assets/guest.jpg")
+        gcs_path = f"sessions/{session_id}/input/guest.jpg"
+        guest_image_uri = gcs.upload_file(local_path, gcs_path, "image/jpeg")
 
     # Create Firestore session doc
     # We want the session_id we already generated, so we build the doc directly

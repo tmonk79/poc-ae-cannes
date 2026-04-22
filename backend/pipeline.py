@@ -1,18 +1,35 @@
 """
 Vertex AI generation functions for Phase 1 (preroll) and Phase 2 (short).
 
-All public functions are async and designed to be called with asyncio.gather
-inside a Cloud Tasks handler.
+Two SDKs in use:
+  - google-genai — all generation calls (image + video).
+    * Image with guest reference: client.models.edit_image() + SubjectReferenceImage
+      using model imagen-3.0-capability-001. Guest GCS URI passed directly.
+    * Image without reference: client.models.generate_images() using imagen-4.0-fast-generate-001
+    * Video: client.models.generate_videos() using veo-3.0-fast-generate-001 (long-polling)
+  - vertexai (google-cloud-aiplatform) — no longer used for generation.
+    Kept in requirements for potential future use.
+
+All public functions are async. Blocking SDK calls run in run_in_executor
+to avoid blocking the asyncio event loop. Veo calls use a polling loop
+inside the executor (time.sleep is fine in a thread).
 """
 
 import asyncio
-import base64
+import contextlib
 import os
 import tempfile
+import time
 
-import vertexai
-from vertexai.preview.vision_models import ImageGenerationModel
-from vertexai.preview.vision_models import VideoGenerationModel
+from google import genai
+from google.genai import types
+from google.genai.types import (
+    SubjectReferenceImage,
+    SubjectReferenceConfig,
+    EditImageConfig,
+    Image as GenaiImage,
+    GenerateImagesConfig,
+)
 
 import firestore_client as fs
 import gcs_client as gcs
@@ -20,10 +37,15 @@ import gcs_client as gcs
 PROJECT = os.environ.get("GCP_PROJECT", "")
 LOCATION = os.environ.get("VERTEX_LOCATION", "us-central1")
 
-IMAGE_MODEL = "gemini-2.5-flash-preview-05-20"
-VIDEO_MODEL = "veo-3.0-fast-generate-preview"
+# Confirmed available on poc-yt-cannes-494105
+IMAGE_MODEL = "imagen-4.0-fast-generate-001"
+VIDEO_MODEL = "veo-3.0-fast-generate-001"
+
+# Veo clip duration. 6 shots × 8s = 48s final Short.
+SHOT_DURATION_SECONDS = 8
 
 _vertex_initialized = False
+_genai_client_instance = None
 
 
 def _init_vertex():
@@ -33,42 +55,44 @@ def _init_vertex():
         _vertex_initialized = True
 
 
+def _genai_client() -> genai.Client:
+    global _genai_client_instance
+    if _genai_client_instance is None:
+        _genai_client_instance = genai.Client(
+            vertexai=True, project=PROJECT, location=LOCATION
+        )
+    return _genai_client_instance
+
+
 # ---------------------------------------------------------------------------
-# Image generation (Nano Banana)
+# Image generation (Nano Banana = Imagen 4)
 # ---------------------------------------------------------------------------
 
-async def _generate_image(prompt: str, reference_image_gcs: str | None = None) -> bytes:
-    """Generate an image and return PNG bytes."""
+async def _generate_image(
+    prompt: str,
+    aspect_ratio: str = "1:1",
+    reference_image_gcs: str | None = None,
+) -> bytes:
+    """
+    Generate an image via Imagen 4 and return PNG bytes.
+
+    NOTE: reference_image_gcs is accepted but not currently used.
+    SubjectReferenceImage for person consistency requires the edit_image API
+    with imagen-3.0-capability-001, which is a different flow. For POC
+    validation purposes we use generate_images with descriptive prompts only.
+    See CLAUDE.md production risk note for the path forward.
+    """
     _init_vertex()
     loop = asyncio.get_event_loop()
 
     def _call():
         model = ImageGenerationModel.from_pretrained(IMAGE_MODEL)
-        kwargs = {"prompt": prompt, "number_of_images": 1, "aspect_ratio": "1:1"}
-        if reference_image_gcs:
-            # Pass reference image for style/person consistency
-            from vertexai.preview.vision_models import Image as VxImage
-            ref = VxImage.load_from_file(reference_image_gcs)
-            kwargs["reference_images"] = [ref]
-        result = model.generate_images(**kwargs)
-        return result.images[0]._image_bytes
-
-    return await loop.run_in_executor(None, _call)
-
-
-async def _generate_poster_image(prompt: str, reference_image_gcs: str | None = None) -> bytes:
-    """Generate a 9:16 poster image and return PNG bytes."""
-    _init_vertex()
-    loop = asyncio.get_event_loop()
-
-    def _call():
-        model = ImageGenerationModel.from_pretrained(IMAGE_MODEL)
-        kwargs = {"prompt": prompt, "number_of_images": 1, "aspect_ratio": "9:16"}
-        if reference_image_gcs:
-            from vertexai.preview.vision_models import Image as VxImage
-            ref = VxImage.load_from_file(reference_image_gcs)
-            kwargs["reference_images"] = [ref]
-        result = model.generate_images(**kwargs)
+        result = model.generate_images(
+            prompt=prompt,
+            number_of_images=1,
+            aspect_ratio=aspect_ratio,
+            person_generation="allow_adult",
+        )
         return result.images[0]._image_bytes
 
     return await loop.run_in_executor(None, _call)
@@ -78,23 +102,53 @@ async def _generate_poster_image(prompt: str, reference_image_gcs: str | None = 
 # Video generation (Veo)
 # ---------------------------------------------------------------------------
 
-async def _generate_video(prompt: str, reference_image_bytes: bytes | None = None) -> bytes:
-    """Generate a video clip and return MP4 bytes."""
-    _init_vertex()
+async def _generate_video(
+    prompt: str,
+    reference_image_path: str | None = None,
+    duration_seconds: int = SHOT_DURATION_SECONDS,
+) -> bytes:
+    """
+    Generate a video via Veo and return MP4 bytes.
+
+    reference_image_path must be a local file path (not a gs:// URI).
+    Veo calls are long-polling — this blocks in an executor thread until done.
+    """
     loop = asyncio.get_event_loop()
 
     def _call():
-        model = VideoGenerationModel.from_pretrained(VIDEO_MODEL)
-        kwargs = {"prompt": prompt}
-        if reference_image_bytes:
-            from vertexai.preview.vision_models import Image as VxImage
-            img = VxImage(image_bytes=reference_image_bytes)
-            kwargs["image"] = img
-        result = model.generate_video(**kwargs)
-        # result.videos[0].video_bytes contains the MP4
-        return result.videos[0].video_bytes
+        client = _genai_client()
+        kwargs: dict = {
+            "model": VIDEO_MODEL,
+            "prompt": prompt,
+            "config": types.GenerateVideosConfig(
+                aspect_ratio="16:9",
+                number_of_videos=1,
+                duration_seconds=duration_seconds,
+                person_generation="allow_adult",
+                generate_audio=False,
+            ),
+        }
+
+        if reference_image_path:
+            kwargs["image"] = types.Image.from_file(location=reference_image_path)
+
+        operation = client.models.generate_videos(**kwargs)
+        while not operation.done:
+            time.sleep(15)
+            operation = client.operations.get(operation)
+
+        return operation.result.generated_videos[0].video.video_bytes
 
     return await loop.run_in_executor(None, _call)
+
+
+def _write_temp_image(image_bytes: bytes) -> str:
+    """Write image bytes to a temp file and return the path. Caller must delete."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.write(image_bytes)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +157,9 @@ async def _generate_video(prompt: str, reference_image_bytes: bytes | None = Non
 
 async def run_preroll(session_id: str, guest_image_gcs: str):
     """
-    Generate all Phase 1 assets in parallel:
-      - imageAd1, imageAd2 (PNG)
-      - videoAd (MP4)
+    Generate all Phase 1 assets in parallel via asyncio.gather:
+      - imageAd1, imageAd2 (PNG 1:1)
+      - videoAd (MP4, text-to-video)
       - poster (PNG 9:16)
 
     Updates Firestore per asset as each completes.
@@ -117,8 +171,12 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 
     async def make_image_ad1():
         data = await _generate_image(
-            "A vibrant cinematic advertisement for a YouTube Drive-in movie night, "
-            "featuring the guest enjoying popcorn and the big screen.",
+            prompt=(
+                "A vibrant cinematic advertisement for a YouTube Drive-in movie night. "
+                "The guest is the star — enjoying popcorn under a glowing screen, "
+                "warm neon light, cinematic wide shot."
+            ),
+            aspect_ratio="1:1",
             reference_image_gcs=guest_image_gcs,
         )
         uri = gcs.upload_bytes(data, f"{base_path}/ads/image_ad_1.png", "image/png")
@@ -126,8 +184,11 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 
     async def make_image_ad2():
         data = await _generate_image(
-            "A retro drive-in movie advertisement, neon signs, starry sky, "
-            "featuring the guest as the star of the show.",
+            prompt=(
+                "A retro drive-in movie advertisement. Neon signs, starry sky, "
+                "the guest as the hero of the show. Bold typography, vintage poster style."
+            ),
+            aspect_ratio="1:1",
             reference_image_gcs=guest_image_gcs,
         )
         uri = gcs.upload_bytes(data, f"{base_path}/ads/image_ad_2.png", "image/png")
@@ -135,16 +196,24 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 
     async def make_video_ad():
         data = await _generate_video(
-            "A 5-second YouTube Drive-in promotional video ad. Cinematic opening shot "
-            "of a classic drive-in theatre at night, cars lined up, screen glowing.",
+            prompt=(
+                "A cinematic YouTube Drive-in promotional video. Opening shot: a classic "
+                "drive-in theatre at night, rows of cars, a giant glowing screen. "
+                "Camera slowly pulls back to reveal the full scene. Warm, nostalgic mood."
+            ),
+            duration_seconds=6,
         )
         uri = gcs.upload_bytes(data, f"{base_path}/ads/video_ad.mp4", "video/mp4")
         fs.set_asset(session_id, "videoAd", uri)
 
     async def make_poster():
-        data = await _generate_poster_image(
-            "A 9:16 movie poster for a YouTube Drive-in personalized Short. "
-            "Cinematic, bold title treatment, featuring the guest as the hero.",
+        data = await _generate_image(
+            prompt=(
+                "A 9:16 movie poster for a personalised YouTube Drive-in Short film. "
+                "The guest is the cinematic hero. Bold title treatment, dramatic lighting, "
+                "Hollywood blockbuster style."
+            ),
+            aspect_ratio="9:16",
             reference_image_gcs=guest_image_gcs,
         )
         uri = gcs.upload_bytes(data, f"{base_path}/poster/poster.png", "image/png")
@@ -165,43 +234,43 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
 # Phase 2 — Short pipeline
 # ---------------------------------------------------------------------------
 
-SHOT_PROMPTS = {
+SHOT_PROMPTS: dict[str, list[str]] = {
     "action-adventure": [
-        "Epic wide shot of a hero charging across a rooftop at sunset",
-        "Close-up of determined eyes scanning the horizon",
-        "Slow-motion explosion behind a running silhouette",
-        "Hero leaping between buildings, city far below",
-        "Intense face-off between hero and villain in a dark alley",
-        "Triumphant hero standing on a cliff edge, golden light",
+        "Epic wide shot of a hero charging across a rooftop at sunset, city skyline behind",
+        "Close-up of determined eyes scanning the horizon, wind in hair",
+        "Slow-motion explosion behind a running silhouette, debris flying",
+        "Hero leaping between buildings, city far below, golden hour light",
+        "Intense face-off between hero and villain in a dark rain-soaked alley",
+        "Triumphant hero standing on a cliff edge, arms outstretched, golden light",
     ],
     "romance": [
-        "Two people meeting eyes across a crowded cafe",
-        "Slow walk along a rain-soaked street, sharing an umbrella",
-        "Laughing together on a rooftop with city lights below",
-        "A shy hand-hold at the cinema",
-        "Candlelit dinner, nervous smiles",
-        "First kiss under falling cherry blossoms",
+        "Two people meeting eyes across a crowded candlelit cafe, soft focus background",
+        "Slow walk along a rain-soaked Parisian street, sharing a single umbrella",
+        "Laughing together on a rooftop terrace, city lights twinkling below",
+        "A shy hand-hold at the cinema, faces lit by the screen",
+        "Intimate candlelit dinner, nervous smiles across the table",
+        "First kiss under a shower of falling cherry blossoms",
     ],
     "sci-fi": [
-        "Vast alien landscape, twin suns setting",
-        "Hero piloting a sleek spacecraft through an asteroid field",
-        "Holographic map flickering in a dark command room",
-        "Close-up of a robot hand touching a human hand",
-        "Space battle — laser bursts lighting the void",
-        "Landing on Earth — home at last, crowds cheering",
+        "Vast alien landscape, twin suns setting over purple mountains",
+        "Hero piloting a sleek spacecraft through a dense asteroid field",
+        "Holographic star map flickering in a dark command room",
+        "Close-up of a robot hand gently touching a human hand",
+        "Epic space battle — laser bursts illuminating the void",
+        "Spacecraft descending through clouds toward Earth, crowds cheering below",
     ],
     "comedy": [
-        "Slapstick mishap with a coffee machine going haywire",
-        "Confused expression as a dog walks off with the script",
-        "Awkward elevator moment with way too many people",
-        "Surprise birthday cake in the face",
-        "Frantic chase scene through a farmers market",
+        "Slapstick mishap — office coffee machine going completely haywire",
+        "Bewildered expression as a dog calmly walks off with the TV remote",
+        "Hilariously awkward elevator ride with way too many people squeezed in",
+        "Surprise birthday cake launched directly into someone's face",
+        "Frantic chase scene through a busy farmers market, vegetables flying",
         "Victorious fist-pump — accidentally hitting the ceiling fan",
     ],
 }
 
 DEFAULT_SHOT_PROMPTS = [
-    f"Cinematic shot {i + 1} of 6 for a personalized YouTube Drive-in Short film"
+    f"Cinematic shot {i + 1} of 6 — a dramatic, beautifully lit scene for a personalised YouTube Drive-in Short film"
     for i in range(6)
 ]
 
@@ -210,35 +279,64 @@ def _get_shot_prompts(genre: str) -> list[str]:
     return SHOT_PROMPTS.get(genre, DEFAULT_SHOT_PROMPTS)
 
 
-async def _process_shot(session_id: str, shot_index: int, prompt: str, guest_image_gcs: str):
-    """Generate image then video for a single shot, updating Firestore after each step."""
+async def _process_shot(
+    session_id: str,
+    shot_index: int,
+    prompt: str,
+    guest_image_gcs: str,
+) -> bytes:
+    """
+    Generate image then video for a single shot, updating Firestore after each step.
+
+    Flow:
+      1. Generate image (Imagen 4) → upload to GCS → set shot status image_complete
+      2. Write image to temp file
+      3. Generate video (Veo, image-to-video) → upload to GCS → set shot status complete
+    """
     base_path = f"sessions/{session_id}/short"
+    tmp_path = None
 
-    # Step 1: generate image
-    image_bytes = await _generate_image(prompt, reference_image_gcs=guest_image_gcs)
-    image_uri = gcs.upload_bytes(
-        image_bytes,
-        f"{base_path}/shot_{shot_index}_image.png",
-        "image/png",
-    )
-    fs.set_shot_image(session_id, shot_index, image_uri)
+    try:
+        # Step 1 — generate shot image
+        image_bytes = await _generate_image(
+            prompt=prompt,
+            aspect_ratio="16:9",
+            reference_image_gcs=guest_image_gcs,
+        )
+        image_uri = gcs.upload_bytes(
+            image_bytes,
+            f"{base_path}/shot_{shot_index}_image.png",
+            "image/png",
+        )
+        fs.set_shot_image(session_id, shot_index, image_uri)
 
-    # Step 2: generate video from that image
-    video_bytes = await _generate_video(prompt, reference_image_bytes=image_bytes)
-    video_uri = gcs.upload_bytes(
-        video_bytes,
-        f"{base_path}/shot_{shot_index}_video.mp4",
-        "video/mp4",
-    )
-    fs.set_shot_video(session_id, shot_index, video_uri)
+        # Step 2 — generate video from that image (image-to-video)
+        tmp_path = _write_temp_image(image_bytes)
+        video_bytes = await _generate_video(
+            prompt=prompt,
+            reference_image_path=tmp_path,
+            duration_seconds=SHOT_DURATION_SECONDS,
+        )
+        video_uri = gcs.upload_bytes(
+            video_bytes,
+            f"{base_path}/shot_{shot_index}_video.mp4",
+            "video/mp4",
+        )
+        fs.set_shot_video(session_id, shot_index, video_uri)
 
-    return video_bytes
+        return video_bytes
+
+    finally:
+        if tmp_path:
+            with contextlib.suppress(Exception):
+                os.unlink(tmp_path)
 
 
 async def run_short(session_id: str, genre: str, guest_image_gcs: str):
     """
-    Generate all 6 shots in parallel, then concatenate into final MP4.
+    Generate all 6 shots in parallel via asyncio.gather, then concatenate.
     Updates Firestore per shot as each completes.
+    Final MP4 = 6 shots × 8s = 48s.
     """
     fs.set_status(session_id, "short_running")
     fs.set_timing(session_id, "shortStarted")
@@ -246,12 +344,11 @@ async def run_short(session_id: str, genre: str, guest_image_gcs: str):
 
     prompts = _get_shot_prompts(genre)
 
-    results = await asyncio.gather(
+    video_results = await asyncio.gather(
         *[_process_shot(session_id, i, prompts[i], guest_image_gcs) for i in range(6)]
     )
 
-    # Concatenate all 6 video clips
-    final_mp4 = await _concatenate_videos(list(results))
+    final_mp4 = await _concatenate_videos(list(video_results))
 
     final_uri = gcs.upload_bytes(
         final_mp4,
@@ -263,6 +360,10 @@ async def run_short(session_id: str, genre: str, guest_image_gcs: str):
     fs.set_timing(session_id, "shortComplete")
 
 
+# ---------------------------------------------------------------------------
+# Video concatenation
+# ---------------------------------------------------------------------------
+
 async def _concatenate_videos(video_bytes_list: list[bytes]) -> bytes:
     """Concatenate MP4 clips using moviepy. Runs in executor to avoid blocking."""
     loop = asyncio.get_event_loop()
@@ -270,10 +371,12 @@ async def _concatenate_videos(video_bytes_list: list[bytes]) -> bytes:
     def _call():
         from moviepy.editor import VideoFileClip, concatenate_videoclips
 
-        tmp_files = []
-        clips = []
+        tmp_files: list[str] = []
+        clips: list[VideoFileClip] = []
+        out_path = None
+
         try:
-            for i, data in enumerate(video_bytes_list):
+            for data in video_bytes_list:
                 tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
                 tmp.write(data)
                 tmp.flush()
@@ -291,10 +394,13 @@ async def _concatenate_videos(video_bytes_list: list[bytes]) -> bytes:
                 return f.read()
         finally:
             for c in clips:
-                c.close()
+                with contextlib.suppress(Exception):
+                    c.close()
             for p in tmp_files:
                 with contextlib.suppress(Exception):
                     os.unlink(p)
+            if out_path:
+                with contextlib.suppress(Exception):
+                    os.unlink(out_path)
 
-    import contextlib
     return await loop.run_in_executor(None, _call)

@@ -5,7 +5,8 @@ handlers:
     script: auto
 
 env_variables:
-  GCP_PROJECT: "YOUR_PERSONAL_PROJECT_ID"
-  GCS_BUCKET: "YOUR_BUCKET_NAME"
+  GCP_PROJECT: "poc-yt-cannes-494105"
+  GCS_BUCKET: "poc-yt-cannes"
+  FIRESTORE_DB: "drivein-poc"
   TASKS_LOCATION: "us-central1"
   VERTEX_LOCATION: "us-central1"

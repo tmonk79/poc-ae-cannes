@@ -1,15 +1,17 @@
+import os
 import uuid
 from datetime import datetime, timezone
 
 from google.cloud import firestore
 
 _db = None
+FIRESTORE_DB = os.environ.get("FIRESTORE_DB", "drivein-poc")
 
 
 def get_db():
     global _db
     if _db is None:
-        _db = firestore.Client()
+        _db = firestore.Client(database=FIRESTORE_DB)
     return _db
 
 

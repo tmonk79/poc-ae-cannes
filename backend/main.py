@@ -134,16 +134,29 @@ def frontend_static(filename):
 @app.route("/poc/media", methods=["GET"])
 def media_proxy():
     """
-    Redirect gs:// URIs to short-lived signed HTTPS URLs so the browser
-    can render images and videos stored in GCS.
+    Serve GCS assets to the browser.
+
+    Locally: streams the file directly (ADC tokens can't sign URLs).
+    On App Engine: redirects to a signed URL (service account has a private key).
     Usage: /poc/media?uri=gs://bucket/path/to/file
     """
     uri = request.args.get("uri", "")
     if not uri.startswith("gs://"):
         return jsonify({"error": "invalid uri"}), 400
+
     path = gcs.gcs_path_from_uri(uri)
-    signed = gcs.signed_url(path, expiration_minutes=15)
-    return redirect(signed)
+
+    try:
+        signed = gcs.signed_url(path, expiration_minutes=15)
+        return redirect(signed)
+    except AttributeError:
+        # Running locally with ADC — stream the file directly instead
+        import io
+        bucket = gcs.get_client().bucket(GCS_BUCKET)
+        blob = bucket.blob(path)
+        data = blob.download_as_bytes()
+        content_type = blob.content_type or "application/octet-stream"
+        return Response(io.BytesIO(data), mimetype=content_type)
 
 
 # ---------------------------------------------------------------------------

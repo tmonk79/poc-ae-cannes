@@ -99,20 +99,23 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
 
 ---
 
-## Step 5 — Verify Veo access
+## Step 5 — Verify Veo access ✓
 
 > **Do this before building anything else.** Veo requires explicit enablement and is the highest-risk unknown.
 
-Run a quick smoke test from the Python REPL:
+Run `backend/test_vertex.py` (uses `google-genai` SDK — the correct SDK for Veo):
 
-```python
-import vertexai
-from vertexai.preview.vision_models import VideoGenerationModel
-
-vertexai.init(project="YOUR_PROJECT_ID", location="us-central1")
-model = VideoGenerationModel.from_pretrained("veo-3.0-fast-generate-preview")
-print("Veo access confirmed")
+```bash
+cd backend
+source .venv/bin/activate
+python test_vertex.py
 ```
+
+Expected output: polls every 15 seconds, then confirms video bytes received and saves `test_output.mp4`.
+
+**Confirmed working on poc-yt-cannes-494105:**
+- Model: `veo-3.0-fast-generate-001` ✓
+- Single call duration: ~90 seconds ✓
 
 If this fails with a permission or quota error, contact your GCP account team to enable Veo on the project before continuing.
 
@@ -225,14 +228,14 @@ gcloud app logs tail -s default
 
 | # | Task | Done |
 |---|------|------|
-| 1 | GCP auth + project set | [ ] |
-| 2 | APIs enabled | [ ] |
-| 3 | App Engine, Firestore, GCS bucket, Cloud Tasks queues created | [ ] |
-| 4 | Service account created with correct roles | [ ] |
-| 5 | Veo access verified | [ ] |
+| 1 | GCP auth + project set | ✓ |
+| 2 | APIs enabled | ✓ |
+| 3 | App Engine, Firestore, GCS bucket, Cloud Tasks queues created | ✓ |
+| 4 | Service account created with correct roles | ✓ |
+| 5 | Veo access verified (~90s per call, `veo-3.0-fast-generate-001`) | ✓ |
 | 6 | `backend/app.yaml` configured | [ ] |
 | 7 | `frontend/firebase-config.js` configured | [ ] |
 | 8 | Test guest photo added | [ ] |
-| 9 | `pip install -r requirements.txt` done | [ ] |
+| 9 | `pip install -r requirements.txt` done | ✓ |
 | 10 | Local run working at http://localhost:8080/poc/ | [ ] |
 | 11 | Deployed to App Engine | [ ] |

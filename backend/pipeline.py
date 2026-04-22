@@ -38,21 +38,14 @@ PROJECT = os.environ.get("GCP_PROJECT", "")
 LOCATION = os.environ.get("VERTEX_LOCATION", "us-central1")
 
 # Confirmed available on poc-yt-cannes-494105
-IMAGE_MODEL = "imagen-4.0-fast-generate-001"
+IMAGE_MODEL = "imagen-4.0-fast-generate-001"          # text-to-image (no reference)
+IMAGE_MODEL_CAPABILITY = "imagen-3.0-capability-001"  # image with SubjectReferenceImage
 VIDEO_MODEL = "veo-3.0-fast-generate-001"
 
 # Veo clip duration. 6 shots × 8s = 48s final Short.
 SHOT_DURATION_SECONDS = 8
 
-_vertex_initialized = False
 _genai_client_instance = None
-
-
-def _init_vertex():
-    global _vertex_initialized
-    if not _vertex_initialized:
-        vertexai.init(project=PROJECT, location=LOCATION)
-        _vertex_initialized = True
 
 
 def _genai_client() -> genai.Client:
@@ -65,7 +58,7 @@ def _genai_client() -> genai.Client:
 
 
 # ---------------------------------------------------------------------------
-# Image generation (Nano Banana = Imagen 4)
+# Image generation (Nano Banana = Imagen)
 # ---------------------------------------------------------------------------
 
 async def _generate_image(
@@ -74,26 +67,54 @@ async def _generate_image(
     reference_image_gcs: str | None = None,
 ) -> bytes:
     """
-    Generate an image via Imagen 4 and return PNG bytes.
+    Generate an image and return PNG bytes.
 
-    NOTE: reference_image_gcs is accepted but not currently used.
-    SubjectReferenceImage for person consistency requires the edit_image API
-    with imagen-3.0-capability-001, which is a different flow. For POC
-    validation purposes we use generate_images with descriptive prompts only.
-    See CLAUDE.md production risk note for the path forward.
+    With reference_image_gcs: uses edit_image() + SubjectReferenceImage on
+    imagen-3.0-capability-001. The guest GCS URI is passed directly — no
+    local download needed. Reference is tagged as [1] in the prompt.
+
+    Without reference_image_gcs: uses generate_images() on
+    imagen-4.0-fast-generate-001 (text-to-image only, used for video ad).
     """
-    _init_vertex()
     loop = asyncio.get_event_loop()
 
     def _call():
-        model = ImageGenerationModel.from_pretrained(IMAGE_MODEL)
-        result = model.generate_images(
-            prompt=prompt,
-            number_of_images=1,
-            aspect_ratio=aspect_ratio,
-            person_generation="allow_adult",
-        )
-        return result.images[0]._image_bytes
+        client = _genai_client()
+
+        if reference_image_gcs:
+            # Inject the reference tag into the prompt
+            ref_prompt = prompt + " The person in this image is [1]."
+            subject_ref = SubjectReferenceImage(
+                reference_id=1,
+                reference_image=GenaiImage(gcs_uri=reference_image_gcs),
+                config=SubjectReferenceConfig(
+                    subject_description="the guest, the main subject of the image",
+                    subject_type="SUBJECT_TYPE_PERSON",
+                ),
+            )
+            result = client.models.edit_image(
+                model=IMAGE_MODEL_CAPABILITY,
+                prompt=ref_prompt,
+                reference_images=[subject_ref],
+                config=EditImageConfig(
+                    edit_mode="EDIT_MODE_DEFAULT",
+                    number_of_images=1,
+                    aspect_ratio=aspect_ratio,
+                    person_generation="ALLOW_ADULT",
+                ),
+            )
+        else:
+            result = client.models.generate_images(
+                model=IMAGE_MODEL,
+                prompt=prompt,
+                config=GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio=aspect_ratio,
+                    person_generation="ALLOW_ADULT",
+                ),
+            )
+
+        return result.generated_images[0].image.image_bytes
 
     return await loop.run_in_executor(None, _call)
 
@@ -197,9 +218,15 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
     async def make_video_ad():
         data = await _generate_video(
             prompt=(
-                "A cinematic YouTube Drive-in promotional video. Opening shot: a classic "
-                "drive-in theatre at night, rows of cars, a giant glowing screen. "
-                "Camera slowly pulls back to reveal the full scene. Warm, nostalgic mood."
+                "Cinematic promotional ad for a YouTube Drive-in movie night. "
+                "Low aerial drone shot glides forward over a packed 1950s-style drive-in lot at dusk — "
+                "rows of gleaming vintage cars, their windows reflecting a giant screen as it flickers to life. "
+                "The projection beam cuts dramatically through hazy night air. "
+                "Neon concession stand signs buzz on in the foreground. "
+                "Quick cut to a close-up of popcorn being tossed into the air in slow motion, "
+                "golden kernels catching the screen light. "
+                "End on a wide pull-back revealing the full glowing amphitheatre under a starry sky. "
+                "Colour grade: warm amber, rich shadows, film grain. High energy, euphoric mood."
             ),
             duration_seconds=6,
         )
@@ -209,9 +236,16 @@ async def run_preroll(session_id: str, guest_image_gcs: str):
     async def make_poster():
         data = await _generate_image(
             prompt=(
-                "A 9:16 movie poster for a personalised YouTube Drive-in Short film. "
-                "The guest is the cinematic hero. Bold title treatment, dramatic lighting, "
-                "Hollywood blockbuster style."
+                "A cinematic 9:16 vertical movie poster. "
+                "The person in this image is [1], the star of the film — shown in a dramatic hero pose, "
+                "facing slightly off-camera, centre-frame. "
+                "Epic Hollywood blockbuster style: deep shadow, rich contrast, volumetric god-rays piercing "
+                "through dark storm clouds behind them. "
+                "Background: a giant glowing drive-in movie screen at night, rows of vintage cars, "
+                "warm amber and teal colour grading. "
+                "Bold sans-serif title text at the top reads 'YOUR STORY'. "
+                "Tagline in smaller type near the bottom: 'One night. One screen. Unforgettable.' "
+                "Photorealistic, ultra-detailed, anamorphic lens flare, IMAX quality."
             ),
             aspect_ratio="9:16",
             reference_image_gcs=guest_image_gcs,
